@@ -1,0 +1,513 @@
+<!doctype html>
+<html lang="en-AU">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+</head>
+<body>
+<title>Worklist Scanner</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@400;500;600&family=IBM+Plex+Serif:wght@500;600&display=swap">
+<style>
+/* Layout: a printed ward list under a lamp. Control strip on top, the list itself below as a wide scrolling sheet; flagged cells get a highlighter wash. */
+:root {
+  --paper: #f6f7f4;
+  --sheet: #ffffff;
+  --ink: #1d2433;
+  --ink-soft: #586176;
+  --rule: #d5d9e0;
+  --rule-strong: #9aa3b2;
+  --accent: #23518c;
+  --accent-ink: #ffffff;
+  --highlight: #fff1a8;
+  --highlight-edge: #d9b400;
+  --danger: #a6312b;
+  --ok: #2f6b45;
+  --font-display: "IBM Plex Serif", Georgia, "Times New Roman", serif;
+  --font-body: "IBM Plex Sans Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #12151b; --sheet: #1a1f28; --ink: #e6e9ef; --ink-soft: #9aa3b4;
+    --rule: #2c3340; --rule-strong: #4a5468; --accent: #7fa8e0; --accent-ink: #0f1520;
+    --highlight: #4a3f0c; --highlight-edge: #c9a400; --danger: #e8817a; --ok: #7cc495;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --paper: #12151b; --sheet: #1a1f28; --ink: #e6e9ef; --ink-soft: #9aa3b4;
+  --rule: #2c3340; --rule-strong: #4a5468; --accent: #7fa8e0; --accent-ink: #0f1520;
+  --highlight: #4a3f0c; --highlight-edge: #c9a400; --danger: #e8817a; --ok: #7cc495;
+  color-scheme: dark;
+}
+html, body { background: var(--paper); color: var(--ink); }
+body { font-family: var(--font-body); font-size: 15px; line-height: 1.4; padding-inline: 16px; padding-block: 20px 40px; }
+.wrap { max-width: 1400px; margin-inline: auto; display: grid; gap: 18px; }
+
+header.top { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px 16px; border-bottom: 2px solid var(--ink); padding-bottom: 8px; }
+h1 { font-family: var(--font-display); font-weight: 600; font-size: 1.7rem; margin: 0; letter-spacing: -0.01em; }
+.sub { color: var(--ink-soft); font-size: 0.95rem; margin: 0; max-width: 60ch; }
+
+.controls { display: grid; grid-template-columns: minmax(0, 220px) minmax(0, 1fr); gap: 16px; align-items: start; }
+@media (max-width: 640px) { .controls { grid-template-columns: minmax(0, 1fr); } }
+
+.drop { border: 1.5px dashed var(--rule-strong); border-radius: 6px; background: var(--sheet); aspect-ratio: 4 / 3; max-width: 100%; display: grid; place-items: center; text-align: center; padding: 10px; cursor: pointer; position: relative; overflow: hidden; color: var(--ink-soft); font-size: 0.9rem; }
+.drop:focus-visible, .drop.over { outline: 2px solid var(--accent); outline-offset: 2px; }
+.drop img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: var(--sheet); }
+.drop input { position: absolute; inset: 0; opacity: 0; cursor: pointer; }
+
+.panel { display: grid; gap: 12px; min-width: 0; }
+.row { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; }
+label.opt { display: inline-flex; gap: 6px; align-items: center; font-size: 0.92rem; }
+select { font: inherit; padding: 4px 6px; border: 1px solid var(--rule-strong); border-radius: 4px; background: var(--sheet); color: var(--ink); }
+
+button { font: inherit; font-weight: 600; border-radius: 4px; padding: 7px 14px; border: 1px solid var(--rule-strong); background: var(--sheet); color: var(--ink); cursor: pointer; }
+button:hover:not(:disabled) { border-color: var(--ink); }
+button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+button:disabled { opacity: 0.45; cursor: default; }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button.small { padding: 3px 9px; font-size: 0.85rem; font-weight: 500; }
+
+.status { font-family: var(--font-mono); font-size: 0.82rem; color: var(--ink-soft); min-height: 1.3em; }
+.status.err { color: var(--danger); }
+.status.good { color: var(--ok); }
+
+.metrics { display: flex; flex-wrap: wrap; gap: 6px 22px; font-family: var(--font-mono); font-size: 0.82rem; color: var(--ink-soft); font-variant-numeric: tabular-nums; }
+.metrics b { color: var(--ink); font-weight: 500; }
+.metrics .flagcount b { background: var(--highlight); padding: 0 4px; border-radius: 2px; }
+
+.example-note { font-size: 0.88rem; background: var(--sheet); border: 1px solid var(--rule); border-left: 3px solid var(--rule-strong); padding: 6px 10px; color: var(--ink-soft); }
+
+.boardbar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; justify-content: space-between; }
+.listdate { font-family: var(--font-display); font-size: 1.25rem; font-weight: 500; outline: none; border-bottom: 1px dashed transparent; min-width: 6ch; }
+.listdate:focus { border-bottom-color: var(--accent); }
+
+.sheetwrap { overflow-x: auto; background: var(--sheet); border: 1px solid var(--rule-strong); border-radius: 4px; max-height: 75vh; overflow-y: auto; }
+table { border-collapse: collapse; font-size: 0.86rem; font-variant-numeric: tabular-nums; }
+th, td { border: 1px solid var(--rule); padding: 5px 7px; vertical-align: top; text-align: left; white-space: pre-wrap; min-width: 7rem; max-width: 22rem; }
+th { position: sticky; top: 0; z-index: 2; background: var(--sheet); font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--ink-soft); border-bottom: 2px solid var(--rule-strong); }
+td.wide, th.wide { min-width: 18rem; max-width: 30rem; }
+td.narrow, th.narrow { min-width: 4.5rem; }
+td[contenteditable]:focus, th[contenteditable]:focus { outline: 2px solid var(--accent); outline-offset: -2px; background: var(--paper); }
+td.flag { background: var(--highlight); box-shadow: inset 3px 0 0 var(--highlight-edge); }
+td.flag.current { outline: 2px solid var(--highlight-edge); outline-offset: -2px; }
+td.ctl { min-width: 0; width: 1%; white-space: nowrap; background: var(--paper); }
+th.ctl { min-width: 0; width: 1%; }
+.flagtip { display: block; font-family: var(--font-mono); font-size: 0.7rem; color: var(--ink-soft); margin-top: 3px; user-select: none; }
+
+.notes { font-size: 0.9rem; color: var(--ink-soft); }
+.notes:empty { display: none; }
+.hide { display: none; }
+[hidden] { display: none !important; }
+#outsideNote a { color: var(--accent); font-weight: 600; }
+
+@media (prefers-reduced-motion: no-preference) {
+  .spin::before { content: ""; display: inline-block; width: 0.7em; height: 0.7em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; margin-right: 6px; vertical-align: -1px; animation: s 0.8s linear infinite; }
+  @keyframes s { to { transform: rotate(360deg); } }
+}
+</style>
+
+<div class="wrap">
+  <header class="top">
+    <h1>Worklist Scanner</h1>
+    <p class="sub">Photo of a paper ward list in, editable table out. Claude reads the photo on your own plan; yellow cells are the ones it wasn't sure about.</p>
+  </header>
+
+  <section class="controls" aria-label="Photo and settings">
+    <div>
+      <div class="drop" id="drop" tabindex="0" role="button" aria-label="Choose or drop a worklist photo">
+        <span id="dropText">Tap to choose a photo,<br>drop one here, or paste</span>
+        <img id="preview" alt="Worklist photo preview" hidden>
+        <input type="file" id="file" accept="image/jpeg,image/png,image/webp" aria-label="Worklist photo">
+      </div>
+    </div>
+    <div class="panel">
+      <div class="row">
+        <label class="opt" for="tier">Reader
+          <select id="tier">
+            <option value="default">Standard (faster)</option>
+            <option value="complex">Most capable (slower)</option>
+          </select>
+        </label>
+        <label class="opt" for="strips"><input type="checkbox" id="strips" checked> Read in strips (better for small text)</label>
+        <button class="small" id="rotate" type="button" disabled>Rotate 90°</button>
+      </div>
+      <div class="row">
+        <button class="primary" id="go" type="button" disabled>Read list</button>
+        <button id="stop" type="button" hidden>Stop</button>
+      </div>
+      <div class="status" id="status" aria-live="polite"></div>
+      <div class="metrics" id="metrics"></div>
+    </div>
+  </section>
+
+  <div class="example-note" id="outsideNote" hidden>Reading photos only works when this page is opened inside Claude. Editing and export work here. <a href="https://claude.ai/artifact/KA2BXS94nsGfisFXZCXqeK">Open Worklist Scanner in Claude</a></div>
+
+  <section aria-label="Worklist" style="display:grid;gap:10px;min-width:0">
+    <div class="example-note" id="exampleNote">Example rows, typed in by hand from a fictional list so you can see the layout. Read a photo to replace them.</div>
+    <div class="boardbar">
+      <div class="listdate" id="listDate" contenteditable="true" spellcheck="false" aria-label="List date"></div>
+      <div class="row">
+        <button class="small" id="nextFlag" type="button">Next unsure cell</button>
+        <button class="small" id="addRow" type="button">Add row</button>
+        <button class="small" id="copyTsv" type="button">Copy for Excel</button>
+        <button class="small" id="csv" type="button" hidden>Save CSV</button>
+      </div>
+    </div>
+    <div class="sheetwrap"><table id="sheet"></table></div>
+    <div class="notes" id="notes"></div>
+  </section>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const STORE_KEY = "worklist-scanner-board-v1";
+
+  // ---------- state ----------
+  const EXAMPLE = {
+    example: true,
+    date: "29/09/2026",
+    columns: ["(bed)", "Admit", "Name", "Diagnosis", "Symptoms", "PMHx", "Investigations", "Address", "Meds", "Current Mx/Jobs", "Aet…"],
+    rows: [
+      { cells: ["…1", "3/7", "Cheryl Loxton\n434705\n80F", "Likely GBS ophthalmoplegic variant\n- preceded by resp sx 1/52", "Progressive bilateral UL weakness + proximal LL weakness + opthalmoplegia with bulbar + resp muscle involv", "HTN, Haemachromatosis, hyperthyroid, HC, GORD, L) eye retinal vein occlusion, L) occipital cavernous angioma", "CT H+A: no acute intracranial pathology\nNCS and EMG performed by Dr Wilson- poor recruitment of muscle on EMG, no decrement on repetitive nerve stimulation, no spontaneous discharges.", "Mount Sheridan", "", "Per ICU", "Post-v…"],
+        flags: [{ col: 0, reason: "cut off at page edge" }, { col: 10, reason: "cut off at page edge" }] },
+      { cells: ["…AU\nB", "27/9/26", "Phillip Goodsel\n057110\n6/7/1950", "TIA\nMRIb negative stroke", "slurred speech, unsteady on feet, L facial droop", "# T2DM\n# PVD\n- Bilateral popliteal stent grafts 2024\n# Smoker", "MRI brain\nConclusion\n- No acute infarct\n- Changes in the flair white matter small vessel ischaemic disease\n- No acute haemorrhage", "Bayview heights", "Amlo 5mg\nAspirin 100\nStatin 80\nClop\nRamipril 2.5", "Review telemetry\nHeart bug\nTTE outpatient", ""],
+        flags: [{ col: 0, reason: "cut off at page edge" }] },
+      { cells: ["REHAB\n15B", "20/9", "Catherine Teizel\n800048\n86 F", "likely ischemic L) MCA territory infarct, etiology unknown", "dense dysphasia\nUTI – hypoactive delirium\nDrug rash – nitro", "T2DM, HTN, dyslipidaemia", "CT B NAD CT A NAD CT P artefactual\nMICROSCOPY 300, 20, <10, Bacteria 3+ Mixed enteric bacteria > 10^8/L", "Edmonton", "Aspirin\nFuresmide\nMetoprolol", "? refer SACU / rehab vs discharge\nUSS liver/spleen – haem bloods\nGen Hth", ""],
+        flags: [{ col: 9, reason: "handwritten: 'Gen Hth'" }] }
+    ],
+    notes: ""
+  };
+
+  let board = load() || structuredClone(EXAMPLE);
+  let sample = null, imgLimits = null;
+  let bitmap = null, rotation = 0;
+  let ctl = null, timer = null, startedAt = 0;
+  let flagCursor = -1;
+
+  function load() {
+    try { const s = localStorage.getItem(STORE_KEY); return s ? JSON.parse(s) : null; } catch { return null; }
+  }
+  let saveT = null;
+  function save() {
+    clearTimeout(saveT);
+    saveT = setTimeout(() => { try { localStorage.setItem(STORE_KEY, JSON.stringify(board)); } catch {} }, 300);
+  }
+
+  // ---------- render ----------
+  function colClass(name) {
+    const n = String(name).toLowerCase();
+    if (/invest|ix\b|result|imaging/.test(n)) return "wide";
+    if (/admit|bed|^\(|date|aet/.test(n)) return "narrow";
+    return "";
+  }
+  function flagFor(row, c) { return (row.flags || []).find((f) => Number(f.col) === c); }
+
+  function render() {
+    $("exampleNote").hidden = !board.example;
+    $("listDate").textContent = board.date || "Undated list";
+    $("notes").textContent = board.notes ? "Reader's note: " + board.notes : "";
+    const t = $("sheet");
+    t.textContent = "";
+    const thead = t.createTHead(), hr = thead.insertRow();
+    board.columns.forEach((name, c) => {
+      const th = document.createElement("th");
+      th.textContent = name; th.className = colClass(name);
+      th.contentEditable = "true"; th.spellcheck = false;
+      th.addEventListener("input", () => { board.columns[c] = th.textContent; save(); });
+      hr.appendChild(th);
+    });
+    const thc = document.createElement("th"); thc.className = "ctl"; thc.setAttribute("aria-label", "Row actions"); hr.appendChild(thc);
+    const tb = t.createTBody();
+    board.rows.forEach((row, r) => {
+      const tr = tb.insertRow();
+      board.columns.forEach((name, c) => {
+        const td = tr.insertCell();
+        td.className = colClass(name);
+        td.contentEditable = "true"; td.spellcheck = false;
+        td.dataset.r = r; td.dataset.c = c;
+        td.textContent = row.cells[c] ?? "";
+        const f = flagFor(row, c);
+        if (f) {
+          td.classList.add("flag");
+          td.title = "Unsure: " + f.reason + " (editing clears this)";
+          const tip = document.createElement("span"); tip.className = "flagtip"; tip.contentEditable = "false";
+          tip.textContent = "? " + f.reason; td.appendChild(tip);
+        }
+        td.addEventListener("input", () => onCellEdit(td, row, c));
+      });
+      const ctlTd = tr.insertCell(); ctlTd.className = "ctl";
+      const del = document.createElement("button");
+      del.type = "button"; del.className = "small"; del.textContent = "Remove";
+      del.setAttribute("aria-label", "Remove row " + (r + 1));
+      del.addEventListener("click", () => confirmRemove(del, r));
+      ctlTd.appendChild(del);
+    });
+    renderMetrics();
+  }
+
+  function cellText(td) {
+    const clone = td.cloneNode(true);
+    clone.querySelectorAll(".flagtip").forEach((n) => n.remove());
+    return clone.innerText.replace(/\n$/, "");
+  }
+  function onCellEdit(td, row, c) {
+    row.cells[c] = cellText(td);
+    if (td.classList.contains("flag")) {
+      row.flags = (row.flags || []).filter((f) => Number(f.col) !== c);
+      td.classList.remove("flag", "current"); td.removeAttribute("title");
+      td.querySelectorAll(".flagtip").forEach((n) => n.remove());
+      renderMetrics();
+    }
+    save();
+  }
+  function confirmRemove(btn, r) {
+    if (btn.dataset.armed) { board.rows.splice(r, 1); save(); render(); return; }
+    btn.dataset.armed = "1"; btn.textContent = "Confirm";
+    setTimeout(() => { if (btn.isConnected) { delete btn.dataset.armed; btn.textContent = "Remove"; } }, 3000);
+  }
+
+  let lastRun = null;
+  function renderMetrics() {
+    const flags = board.rows.reduce((n, r) => n + (r.flags || []).length, 0);
+    const cells = board.rows.length * board.columns.length;
+    const parts = [
+      `<span>rows <b>${board.rows.length}</b></span>`,
+      `<span>cells <b>${cells}</b></span>`,
+      `<span class="flagcount">unsure <b>${flags}</b></span>`
+    ];
+    if (lastRun) {
+      parts.push(`<span>read in <b>${lastRun.secs.toFixed(1)} s</b></span>`);
+      parts.push(`<span>reader <b>${lastRun.tier}</b></span>`);
+      parts.push(`<span>images sent <b>${lastRun.images}</b></span>`);
+    }
+    $("metrics").innerHTML = parts.join("");
+  }
+
+  $("listDate").addEventListener("input", () => { board.date = $("listDate").textContent.trim(); save(); });
+
+  $("addRow").addEventListener("click", () => {
+    board.rows.push({ cells: board.columns.map(() => ""), flags: [] });
+    save(); render();
+    const last = $("sheet").tBodies[0].rows[board.rows.length - 1];
+    last?.cells[0]?.focus();
+  });
+
+  $("nextFlag").addEventListener("click", () => {
+    const flagged = [...document.querySelectorAll("td.flag")];
+    document.querySelectorAll("td.current").forEach((n) => n.classList.remove("current"));
+    if (!flagged.length) { setStatus("No unsure cells left.", "good"); return; }
+    flagCursor = (flagCursor + 1) % flagged.length;
+    const td = flagged[flagCursor];
+    td.classList.add("current");
+    td.scrollIntoView({ block: "center", inline: "center", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    td.focus({ preventScroll: true });
+  });
+
+  // ---------- export ----------
+  function toDelimited(sep) {
+    const esc = (v) => {
+      const s = String(v ?? "");
+      if (sep === "\t") return /[\t\n"]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+      return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+    };
+    return [board.columns, ...board.rows.map((r) => board.columns.map((_, c) => r.cells[c] ?? ""))]
+      .map((line) => line.map(esc).join(sep)).join("\r\n");
+  }
+  $("copyTsv").addEventListener("click", async () => {
+    try { await navigator.clipboard.writeText(toDelimited("\t")); setStatus("Copied. Paste into Excel or Sheets.", "good"); }
+    catch { setStatus("Couldn't reach the clipboard here. Use Save CSV instead.", "err"); }
+  });
+  (async () => {
+    try {
+      const dl = await claude.use("downloads");
+      if (!dl) return;
+      $("csv").hidden = false;
+      $("csv").addEventListener("click", async () => {
+        try {
+          await dl.save({ filename: "worklist-" + (board.date || "undated").replace(/[^\w-]+/g, "-") + ".csv", data: toDelimited(",") });
+        } catch (e) { if (e && e.code && !/cancel|declin/i.test(e.code)) setStatus("Couldn't save the file (" + e.code + ").", "err"); }
+      });
+    } catch {}
+  })();
+
+  // ---------- image intake ----------
+  function setStatus(msg, kind) { const s = $("status"); s.textContent = msg; s.className = "status" + (kind ? " " + kind : ""); }
+
+  async function takeFile(file) {
+    if (!file || !/^image\//.test(file.type)) { setStatus("That isn't an image. Choose a JPEG, PNG or WebP photo.", "err"); return; }
+    try {
+      bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+    } catch {
+      setStatus("Couldn't open that image. Try a different photo.", "err"); return;
+    }
+    rotation = 0;
+    await refreshPreview();
+    $("rotate").disabled = false;
+    $("go").disabled = !sample;
+    setStatus(sample ? "Photo ready. Press Read list." : "Photo loaded, but reading isn't available in this view.", sample ? "" : "err");
+  }
+
+  function drawRotated(maxEdge) {
+    const w0 = bitmap.width, h0 = bitmap.height;
+    const rot = rotation % 180 !== 0;
+    let W = rot ? h0 : w0, H = rot ? w0 : h0;
+    const scale = maxEdge ? Math.min(1, maxEdge / Math.max(W, H)) : 1;
+    W = Math.round(W * scale); H = Math.round(H * scale);
+    const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
+    const g = cv.getContext("2d");
+    g.translate(W / 2, H / 2); g.rotate(rotation * Math.PI / 180);
+    const dw = w0 * scale, dh = h0 * scale;
+    g.drawImage(bitmap, -dw / 2, -dh / 2, dw, dh);
+    return cv;
+  }
+  const toBlob = (cv, q = 0.9) => new Promise((res) => cv.toBlob(res, "image/jpeg", q));
+
+  async function refreshPreview() {
+    const cv = drawRotated(900);
+    const b = await toBlob(cv, 0.8);
+    const img = $("preview");
+    if (img.src) URL.revokeObjectURL(img.src);
+    img.src = URL.createObjectURL(b); img.hidden = false; $("dropText").hidden = true;
+  }
+
+  // Overview + overlapping horizontal strips, so small print survives the ~1.2 MP downsizing.
+  async function buildImages() {
+    const full = drawRotated(3200);
+    const overview = await toBlob(drawRotated(1600), 0.88);
+    const maxCount = imgLimits?.maxCount ?? 1;
+    const wantStrips = $("strips").checked ? Math.min(3, maxCount - 1) : 0;
+    if (wantStrips < 2) return [overview];
+    const H = full.height, W = full.width, overlap = Math.round(H * 0.08);
+    const band = Math.ceil(H / wantStrips);
+    const out = [overview];
+    for (let i = 0; i < wantStrips; i++) {
+      const y0 = Math.max(0, i * band - overlap), y1 = Math.min(H, (i + 1) * band + overlap);
+      const cv = document.createElement("canvas"); cv.width = W; cv.height = y1 - y0;
+      cv.getContext("2d").drawImage(full, 0, y0, W, y1 - y0, 0, 0, W, y1 - y0);
+      out.push(await toBlob(cv, 0.9));
+    }
+    return out;
+  }
+
+  const fileInput = $("file"), drop = $("drop");
+  fileInput.addEventListener("change", () => takeFile(fileInput.files[0]));
+  drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); } });
+  ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
+  ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, () => drop.classList.remove("over")));
+  drop.addEventListener("drop", (e) => { e.preventDefault(); takeFile(e.dataTransfer.files[0]); });
+  document.addEventListener("paste", (e) => {
+    const item = [...(e.clipboardData?.items || [])].find((i) => i.type.startsWith("image/"));
+    if (item) takeFile(item.getAsFile());
+  });
+  $("rotate").addEventListener("click", async () => { rotation = (rotation + 90) % 360; await refreshPreview(); });
+
+  // ---------- reading ----------
+  const PROMPT = (n) => `You are reading a photo of a hospital ward doctors' worklist: a printed table, sometimes with handwritten additions.
+${n > 1 ? `Image 1 is the whole page. Images 2 to ${n} are horizontal strips of the same page, top to bottom, overlapping slightly, so small text is legible. Use image 1 for the table structure and the strips for the text. A row that appears in two strips is ONE row.` : "There is one image: the whole page."}
+
+Transcribe the table. Rules:
+- Copy text exactly as written, including abbreviations, spelling mistakes and odd dates. Do not correct, expand or interpret anything.
+- Columns: use the header row as written, left to right. Include columns that are cut off at the page edge; name them from what is visible (for example "Aet…"), or "(bed)" for an unlabelled column of bed or ward numbers.
+- One object per patient row, top to bottom. Keep line breaks inside a cell as \\n. Empty cell = "".
+- Handwritten text: put it in the cell it sits in and flag that cell with reason "handwritten".
+- Flag every cell you are not fully sure of: hard to read, cut off, faint, might belong to a neighbouring row or column, or characters that could be read two ways. Give the reason in a few words.
+- Text you cannot read at all: write [illegible].
+
+Reply with only this JSON, no other text:
+{"date": "date printed on the list, or null", "columns": ["header", ...], "rows": [{"cells": ["one string per column, same order"], "flags": [{"col": 0, "reason": "short reason"}]}], "notes": "anything about the page as a whole, or empty string"}`;
+
+  function parseJson(text) {
+    const tryP = (s) => { try { return JSON.parse(s); } catch { return undefined; } };
+    let v = tryP(text.trim());
+    if (v === undefined) { const m = text.match(/```(?:json)?\s*([\s\S]*?)```/); if (m) v = tryP(m[1]); }
+    if (v === undefined) { const a = text.indexOf("{"), b = text.lastIndexOf("}"); if (a >= 0 && b > a) v = tryP(text.slice(a, b + 1)); }
+    return v;
+  }
+  function normalise(v) {
+    if (!v || !Array.isArray(v.columns) || !Array.isArray(v.rows)) return null;
+    const columns = v.columns.map((c) => String(c ?? ""));
+    const rows = v.rows.map((r) => {
+      const cells = Array.isArray(r?.cells) ? r.cells.map((x) => String(x ?? "")) : [];
+      while (cells.length < columns.length) cells.push("");
+      const flags = (Array.isArray(r?.flags) ? r.flags : [])
+        .map((f) => ({ col: Number(f?.col), reason: String(f?.reason ?? "unsure") }))
+        .filter((f) => Number.isInteger(f.col) && f.col >= 0 && f.col < columns.length);
+      return { cells: cells.slice(0, columns.length), flags };
+    });
+    return { example: false, date: v.date ? String(v.date) : "", columns, rows, notes: String(v.notes ?? "") };
+  }
+
+  const ERR = {
+    not_granted: "Reading was declined for this page. Reopen the page to be asked again.",
+    sampling_disabled: "Claude isn't available on this account.",
+    rate_limited: "Usage limit or too many reads at once. Wait a bit and try again.",
+    session_expired: "You've been signed out. Sign in again, then retry.",
+    image_rejected: "The photo was refused (wrong type or too large). Try a different photo.",
+    images_unavailable: "This view can't send photos to Claude.",
+    refused: "Claude declined to read this image.",
+    empty_completion: "Claude returned nothing. Try again, or switch off strips.",
+    prompt_too_large: "Too much to send at once. Switch off strips and retry.",
+    upstream_error: "Connection or service hiccup. Try again."
+  };
+
+  $("go").addEventListener("click", async () => {
+    if (!sample || !bitmap) return;
+    $("go").disabled = true; $("stop").hidden = false; $("rotate").disabled = true;
+    ctl = new AbortController();
+    let images;
+    try { images = await buildImages(); } catch { setStatus("Couldn't prepare the photo.", "err"); return finish(); }
+    startedAt = performance.now();
+    let rowsSeen = 0;
+    const tick = () => {
+      const s = ((performance.now() - startedAt) / 1000).toFixed(0);
+      setStatus(rowsSeen ? `Reading… ${rowsSeen} rows so far · ${s} s` : `Thinking… ${s} s (sent ${images.length} image${images.length > 1 ? "s" : ""})`);
+      $("status").classList.add("spin");
+    };
+    tick(); timer = setInterval(tick, 500);
+    try {
+      const res = await sample(PROMPT(images.length), {
+        images, modelTier: $("tier").value, signal: ctl.signal, cache: false,
+        onText: ({ text }) => { rowsSeen = (text.match(/"cells"\s*:/g) || []).length; }
+      });
+      const secs = (performance.now() - startedAt) / 1000;
+      const nb = normalise(parseJson(res.text));
+      if (!nb) { setStatus("Claude's reply didn't come back as a table. Try again, or try the other reader.", "err"); return; }
+      board = nb; flagCursor = -1;
+      lastRun = { secs, tier: res.modelTierApplied === "complex" ? "most capable" : res.modelTierApplied === "quick" ? "quick" : "standard", images: images.length };
+      save(); render();
+      const f = board.rows.reduce((n, r) => n + r.flags.length, 0);
+      setStatus(`Done. ${board.rows.length} rows in ${secs.toFixed(1)} s, ${f} cell${f === 1 ? "" : "s"} to check.` + (res.truncated ? " The reply was cut short, so the last rows may be missing." : ""), res.truncated ? "err" : "good");
+    } catch (e) {
+      if (e?.code === "cancelled") setStatus("Stopped.");
+      else setStatus(ERR[e?.code] || ERR.upstream_error, "err");
+    } finally { finish(); }
+  });
+  $("stop").addEventListener("click", () => ctl?.abort());
+  function finish() {
+    clearInterval(timer); $("status").classList.remove("spin");
+    $("stop").hidden = true; $("go").disabled = !bitmap || !sample; $("rotate").disabled = !bitmap;
+  }
+
+  // ---------- boot ----------
+  render();
+  (async () => {
+    try {
+      sample = await claude.use("sample");
+      if (!sample) { $("outsideNote").hidden = false; setStatus("Photo reading unavailable here.", "err"); return; }
+      imgLimits = (await sample.limits().catch(() => null))?.images || null;
+      if (!imgLimits) { sample = null; setStatus("This view can't send photos to Claude.", "err"); return; }
+      fileInput.accept = imgLimits.mediaTypes.join(",");
+      $("go").disabled = !bitmap;
+    } catch {
+      $("outsideNote").hidden = false; setStatus("Photo reading unavailable here.", "err");
+    }
+  })();
+})();
+</script>
+
+</body>
+</html>
