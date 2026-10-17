@@ -100,8 +100,20 @@ th.ctl { min-width: 0; width: 1%; }
 .notes { font-size: 0.9rem; color: var(--ink-soft); }
 .notes:empty { display: none; }
 .hide { display: none; }
+
 [hidden] { display: none !important; }
 #outsideNote a { color: var(--accent); font-weight: 600; }
+
+.photos { display: grid; gap: 6px; margin-top: 8px; }
+.thumbs { display: flex; flex-wrap: wrap; gap: 6px; }
+.thumb { position: relative; width: 58px; height: 44px; padding: 0; border-radius: 4px; overflow: hidden; border: 1px solid var(--rule-strong); background: var(--sheet); }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb .n { position: absolute; left: 2px; top: 1px; font-family: var(--font-mono); font-size: 0.68rem; font-weight: 500; background: var(--sheet); color: var(--ink); padding: 0 3px; border-radius: 2px; }
+.thumb.sel { outline: 2px solid var(--accent); outline-offset: 1px; }
+.thumbx { position: absolute; right: 1px; top: 1px; width: 18px; height: 18px; padding: 0; line-height: 1; font-size: 0.8rem; border-radius: 3px; background: var(--sheet); }
+.hint { margin: 0; font-size: 0.8rem; color: var(--ink-soft); }
+td.changed { box-shadow: inset 0 -2px 0 var(--accent); }
+.changetip { display: block; font-family: var(--font-mono); font-size: 0.7rem; color: var(--accent); margin-top: 3px; user-select: none; }
 
 @media (prefers-reduced-motion: no-preference) {
   .spin::before { content: ""; display: inline-block; width: 0.7em; height: 0.7em; border: 2px solid currentColor; border-right-color: transparent; border-radius: 50%; margin-right: 6px; vertical-align: -1px; animation: s 0.8s linear infinite; }
@@ -118,9 +130,17 @@ th.ctl { min-width: 0; width: 1%; }
   <section class="controls" aria-label="Photo and settings">
     <div>
       <div class="drop" id="drop" tabindex="0" role="button" aria-label="Choose or drop a worklist photo">
-        <span id="dropText">Tap to choose a photo,<br>drop one here, or paste</span>
+        <span id="dropText">Tap to take or choose a photo of the whole list,<br>drop one here, or paste</span>
         <img id="preview" alt="Worklist photo preview" hidden>
         <input type="file" id="file" accept="image/jpeg,image/png,image/webp" aria-label="Worklist photo">
+      </div>
+      <div class="photos" id="photos" hidden>
+        <div class="thumbs" id="thumbs"></div>
+        <div class="row">
+          <button class="small" id="addPart" type="button">Add another part</button>
+          <input type="file" id="fileAdd" accept="image/jpeg,image/png,image/webp" hidden aria-label="Another part of the list">
+        </div>
+        <p class="hint" id="partHint">Only if one photo can't capture the whole list sharply. Add closer shots top to bottom.</p>
       </div>
     </div>
     <div class="panel">
@@ -131,7 +151,8 @@ th.ctl { min-width: 0; width: 1%; }
             <option value="complex">Most capable (slower)</option>
           </select>
         </label>
-        <label class="opt" for="strips"><input type="checkbox" id="strips" checked> Read in strips (better for small text)</label>
+        <label class="opt" for="strips"><input type="checkbox" id="strips" checked> Read in strips (small text)</label>
+        <label class="opt" for="enhance"><input type="checkbox" id="enhance" checked> Boost contrast and sharpen</label>
         <button class="small" id="rotate" type="button" disabled>Rotate 90°</button>
       </div>
       <div class="row">
@@ -150,6 +171,7 @@ th.ctl { min-width: 0; width: 1%; }
     <div class="boardbar">
       <div class="listdate" id="listDate" contenteditable="true" spellcheck="false" aria-label="List date"></div>
       <div class="row">
+        <button class="small" id="reread" type="button" disabled>Re-read unsure rows</button>
         <button class="small" id="nextFlag" type="button">Next unsure cell</button>
         <button class="small" id="addRow" type="button">Add row</button>
         <button class="small" id="copyTsv" type="button">Copy for Excel</button>
@@ -184,9 +206,12 @@ th.ctl { min-width: 0; width: 1%; }
 
   let board = load() || structuredClone(EXAMPLE);
   let sample = null, imgLimits = null;
-  let bitmap = null, rotation = 0;
-  let ctl = null, timer = null, startedAt = 0;
+  let photos = [];          // [{bitmap, rotation, thumbUrl}]
+  let sel = 0;              // photo shown in the big preview
+  let readPhotos = null;    // snapshot of photos used for the current board, for re-reading
+  let ctl = null, timer = null, busy = false;
   let flagCursor = -1;
+  let lastRun = null;
 
   function load() {
     try { const s = localStorage.getItem(STORE_KEY); return s ? JSON.parse(s) : null; } catch { return null; }
@@ -196,6 +221,7 @@ th.ctl { min-width: 0; width: 1%; }
     clearTimeout(saveT);
     saveT = setTimeout(() => { try { localStorage.setItem(STORE_KEY, JSON.stringify(board)); } catch {} }, 300);
   }
+  const maxImages = () => imgLimits?.maxCount ?? 1;
 
   // ---------- render ----------
   function colClass(name) {
@@ -204,7 +230,8 @@ th.ctl { min-width: 0; width: 1%; }
     if (/admit|bed|^\(|date|aet/.test(n)) return "narrow";
     return "";
   }
-  function flagFor(row, c) { return (row.flags || []).find((f) => Number(f.col) === c); }
+  const flagFor = (row, c) => (row.flags || []).find((f) => Number(f.col) === c);
+  const flagCount = () => board.rows.reduce((n, r) => n + (r.flags || []).length, 0);
 
   function render() {
     $("exampleNote").hidden = !board.example;
@@ -212,7 +239,7 @@ th.ctl { min-width: 0; width: 1%; }
     $("notes").textContent = board.notes ? "Reader's note: " + board.notes : "";
     const t = $("sheet");
     t.textContent = "";
-    const thead = t.createTHead(), hr = thead.insertRow();
+    const hr = t.createTHead().insertRow();
     board.columns.forEach((name, c) => {
       const th = document.createElement("th");
       th.textContent = name; th.className = colClass(name);
@@ -228,7 +255,6 @@ th.ctl { min-width: 0; width: 1%; }
         const td = tr.insertCell();
         td.className = colClass(name);
         td.contentEditable = "true"; td.spellcheck = false;
-        td.dataset.r = r; td.dataset.c = c;
         td.textContent = row.cells[c] ?? "";
         const f = flagFor(row, c);
         if (f) {
@@ -236,6 +262,10 @@ th.ctl { min-width: 0; width: 1%; }
           td.title = "Unsure: " + f.reason + " (editing clears this)";
           const tip = document.createElement("span"); tip.className = "flagtip"; tip.contentEditable = "false";
           tip.textContent = "? " + f.reason; td.appendChild(tip);
+        } else if ((row.changed || []).includes(c)) {
+          td.classList.add("changed");
+          const tip = document.createElement("span"); tip.className = "changetip"; tip.contentEditable = "false";
+          tip.textContent = "re-read"; td.appendChild(tip);
         }
         td.addEventListener("input", () => onCellEdit(td, row, c));
       });
@@ -251,15 +281,16 @@ th.ctl { min-width: 0; width: 1%; }
 
   function cellText(td) {
     const clone = td.cloneNode(true);
-    clone.querySelectorAll(".flagtip").forEach((n) => n.remove());
+    clone.querySelectorAll(".flagtip,.changetip").forEach((n) => n.remove());
     return clone.innerText.replace(/\n$/, "");
   }
   function onCellEdit(td, row, c) {
     row.cells[c] = cellText(td);
-    if (td.classList.contains("flag")) {
+    if (td.classList.contains("flag") || td.classList.contains("changed")) {
       row.flags = (row.flags || []).filter((f) => Number(f.col) !== c);
-      td.classList.remove("flag", "current"); td.removeAttribute("title");
-      td.querySelectorAll(".flagtip").forEach((n) => n.remove());
+      row.changed = (row.changed || []).filter((x) => x !== c);
+      td.classList.remove("flag", "current", "changed"); td.removeAttribute("title");
+      td.querySelectorAll(".flagtip,.changetip").forEach((n) => n.remove());
       renderMetrics();
     }
     save();
@@ -270,32 +301,30 @@ th.ctl { min-width: 0; width: 1%; }
     setTimeout(() => { if (btn.isConnected) { delete btn.dataset.armed; btn.textContent = "Remove"; } }, 3000);
   }
 
-  let lastRun = null;
   function renderMetrics() {
-    const flags = board.rows.reduce((n, r) => n + (r.flags || []).length, 0);
-    const cells = board.rows.length * board.columns.length;
+    const flags = flagCount();
     const parts = [
       `<span>rows <b>${board.rows.length}</b></span>`,
-      `<span>cells <b>${cells}</b></span>`,
+      `<span>cells <b>${board.rows.length * board.columns.length}</b></span>`,
       `<span class="flagcount">unsure <b>${flags}</b></span>`
     ];
     if (lastRun) {
-      parts.push(`<span>read in <b>${lastRun.secs.toFixed(1)} s</b></span>`);
+      parts.push(`<span>${lastRun.label} <b>${lastRun.secs.toFixed(1)} s</b></span>`);
       parts.push(`<span>reader <b>${lastRun.tier}</b></span>`);
       parts.push(`<span>images sent <b>${lastRun.images}</b></span>`);
     }
     $("metrics").innerHTML = parts.join("");
+    const rr = $("reread");
+    rr.disabled = busy || !sample || !flags || !readPhotos;
+    rr.title = !readPhotos ? "Read a photo first (photos aren't kept after the page reloads)" : !flags ? "No unsure cells" : "";
   }
 
   $("listDate").addEventListener("input", () => { board.date = $("listDate").textContent.trim(); save(); });
-
   $("addRow").addEventListener("click", () => {
     board.rows.push({ cells: board.columns.map(() => ""), flags: [] });
     save(); render();
-    const last = $("sheet").tBodies[0].rows[board.rows.length - 1];
-    last?.cells[0]?.focus();
+    $("sheet").tBodies[0].rows[board.rows.length - 1]?.cells[0]?.focus();
   });
-
   $("nextFlag").addEventListener("click", () => {
     const flagged = [...document.querySelectorAll("td.flag")];
     document.querySelectorAll("td.current").forEach((n) => n.classList.remove("current"));
@@ -334,80 +363,185 @@ th.ctl { min-width: 0; width: 1%; }
     } catch {}
   })();
 
-  // ---------- image intake ----------
+  // ---------- image processing ----------
   function setStatus(msg, kind) { const s = $("status"); s.textContent = msg; s.className = "status" + (kind ? " " + kind : ""); }
 
-  async function takeFile(file) {
-    if (!file || !/^image\//.test(file.type)) { setStatus("That isn't an image. Choose a JPEG, PNG or WebP photo.", "err"); return; }
-    try {
-      bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
-    } catch {
-      setStatus("Couldn't open that image. Try a different photo.", "err"); return;
-    }
-    rotation = 0;
-    await refreshPreview();
-    $("rotate").disabled = false;
-    $("go").disabled = !sample;
-    setStatus(sample ? "Photo ready. Press Read list." : "Photo loaded, but reading isn't available in this view.", sample ? "" : "err");
-  }
-
-  function drawRotated(maxEdge) {
-    const w0 = bitmap.width, h0 = bitmap.height;
-    const rot = rotation % 180 !== 0;
+  function drawRotated(p, maxEdge) {
+    const w0 = p.bitmap.width, h0 = p.bitmap.height;
+    const rot = p.rotation % 180 !== 0;
     let W = rot ? h0 : w0, H = rot ? w0 : h0;
     const scale = maxEdge ? Math.min(1, maxEdge / Math.max(W, H)) : 1;
     W = Math.round(W * scale); H = Math.round(H * scale);
     const cv = document.createElement("canvas"); cv.width = W; cv.height = H;
     const g = cv.getContext("2d");
-    g.translate(W / 2, H / 2); g.rotate(rotation * Math.PI / 180);
+    g.translate(W / 2, H / 2); g.rotate(p.rotation * Math.PI / 180);
     const dw = w0 * scale, dh = h0 * scale;
-    g.drawImage(bitmap, -dw / 2, -dh / 2, dw, dh);
+    g.drawImage(p.bitmap, -dw / 2, -dh / 2, dw, dh);
     return cv;
   }
-  const toBlob = (cv, q = 0.9) => new Promise((res) => cv.toBlob(res, "image/jpeg", q));
 
-  async function refreshPreview() {
-    const cv = drawRotated(900);
-    const b = await toBlob(cv, 0.8);
-    const img = $("preview");
-    if (img.src) URL.revokeObjectURL(img.src);
-    img.src = URL.createObjectURL(b); img.hidden = false; $("dropText").hidden = true;
-  }
-
-  // Overview + overlapping horizontal strips, so small print survives the ~1.2 MP downsizing.
-  async function buildImages() {
-    const full = drawRotated(3200);
-    const overview = await toBlob(drawRotated(1600), 0.88);
-    const maxCount = imgLimits?.maxCount ?? 1;
-    const wantStrips = $("strips").checked ? Math.min(3, maxCount - 1) : 0;
-    if (wantStrips < 2) return [overview];
-    const H = full.height, W = full.width, overlap = Math.round(H * 0.08);
-    const band = Math.ceil(H / wantStrips);
-    const out = [overview];
-    for (let i = 0; i < wantStrips; i++) {
-      const y0 = Math.max(0, i * band - overlap), y1 = Math.min(H, (i + 1) * band + overlap);
-      const cv = document.createElement("canvas"); cv.width = W; cv.height = y1 - y0;
-      cv.getContext("2d").drawImage(full, 0, y0, W, y1 - y0, 0, 0, W, y1 - y0);
-      out.push(await toBlob(cv, 0.9));
+  // Levels stretch (1st–99th luminance percentile) then a mild unsharp mask. Keeps colour, so highlighter and pen colours survive.
+  function enhanceCanvas(cv) {
+    const g = cv.getContext("2d", { willReadFrequently: true });
+    const w = cv.width, h = cv.height;
+    const img = g.getImageData(0, 0, w, h), d = img.data, n = w * h;
+    const hist = new Uint32Array(256);
+    for (let i = 0; i < d.length; i += 4) hist[(d[i] * 77 + d[i + 1] * 150 + d[i + 2] * 29) >> 8]++;
+    let lo = 0, hi = 255, acc = 0;
+    for (let v = 0; v < 256; v++) { acc += hist[v]; if (acc >= n * 0.01) { lo = v; break; } }
+    acc = 0;
+    for (let v = 255; v >= 0; v--) { acc += hist[v]; if (acc >= n * 0.01) { hi = v; break; } }
+    if (hi - lo > 40) {
+      const lut = new Uint8ClampedArray(256), k = 255 / (hi - lo);
+      for (let v = 0; v < 256; v++) lut[v] = (v - lo) * k;
+      for (let i = 0; i < d.length; i += 4) { d[i] = lut[d[i]]; d[i + 1] = lut[d[i + 1]]; d[i + 2] = lut[d[i + 2]]; }
     }
+    const src = new Uint8ClampedArray(d), row = w * 4, tmp = new Uint16Array(d.length);
+    for (let y = 0; y < h; y++) {
+      const o = y * row;
+      for (let x = 0; x < w; x++) {
+        const i = o + x * 4, l = x > 0 ? i - 4 : i, r = x < w - 1 ? i + 4 : i;
+        tmp[i] = src[l] + src[i] + src[r]; tmp[i + 1] = src[l + 1] + src[i + 1] + src[r + 1]; tmp[i + 2] = src[l + 2] + src[i + 2] + src[r + 2];
+      }
+    }
+    const amt = 0.6;
+    for (let y = 0; y < h; y++) {
+      const o = y * row, up = y > 0 ? -row : 0, dn = y < h - 1 ? row : 0;
+      for (let x = 0; x < w; x++) {
+        const i = o + x * 4;
+        for (let c = 0; c < 3; c++) {
+          const blur = (tmp[i + c + up] + tmp[i + c] + tmp[i + c + dn]) / 9;
+          d[i + c] = src[i + c] + amt * (src[i + c] - blur);
+        }
+      }
+    }
+    g.putImageData(img, 0, 0);
+    return cv;
+  }
+  const prep = (p, maxEdge, enh = $("enhance").checked) => { const cv = drawRotated(p, maxEdge); return enh ? enhanceCanvas(cv) : cv; };
+  const toBlob = (cv, q = 0.9) => new Promise((res) => cv.toBlob(res, "image/jpeg", q));
+  function crop(cv, y0, y1) {
+    const out = document.createElement("canvas"); out.width = cv.width; out.height = Math.max(1, y1 - y0);
+    out.getContext("2d").drawImage(cv, 0, y0, cv.width, out.height, 0, 0, cv.width, out.height);
     return out;
   }
 
+  // ---------- photo intake ----------
+  async function decode(file) {
+    if (!file || !/^image\//.test(file.type)) { setStatus("That isn't an image. Choose a JPEG, PNG or WebP photo.", "err"); return null; }
+    try { return { bitmap: await createImageBitmap(file, { imageOrientation: "from-image" }), rotation: 0, thumbUrl: "" }; }
+    catch { setStatus("Couldn't open that image. Try a different photo.", "err"); return null; }
+  }
+  async function makeThumb(p) {
+    if (p.thumbUrl) URL.revokeObjectURL(p.thumbUrl);
+    p.thumbUrl = URL.createObjectURL(await toBlob(drawRotated(p, 160), 0.7));
+  }
+  async function startFresh(file) {
+    const p = await decode(file); if (!p) return;
+    photos.forEach((q) => q.thumbUrl && URL.revokeObjectURL(q.thumbUrl));
+    photos = [p]; sel = 0;
+    await makeThumb(p); await refreshPreview(); renderPhotos();
+    setStatus(sample ? "Photo ready. Press Read list." : "Photo loaded, but reading isn't available in this view.", sample ? "" : "err");
+  }
+  async function addPart(file) {
+    if (photos.length >= maxImages()) { setStatus(`Up to ${maxImages()} photos per read here.`, "err"); return; }
+    const p = await decode(file); if (!p) return;
+    photos.push(p); sel = photos.length - 1;
+    await makeThumb(p); await refreshPreview(); renderPhotos();
+    setStatus(`${photos.length} photos ready. They'll be read as parts of one list, in this order.`);
+  }
+  function renderPhotos() {
+    $("photos").hidden = !photos.length;
+    const box = $("thumbs"); box.textContent = "";
+    if (photos.length > 1) photos.forEach((p, i) => {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "thumb" + (i === sel ? " sel" : "");
+      b.setAttribute("aria-label", `Show part ${i + 1}`);
+      b.innerHTML = `<img alt=""><span class="n">${i + 1}</span>`;
+      b.querySelector("img").src = p.thumbUrl;
+      b.addEventListener("click", async () => { sel = i; await refreshPreview(); renderPhotos(); });
+      const x = document.createElement("button");
+      x.type = "button"; x.className = "thumbx"; x.textContent = "×"; x.setAttribute("aria-label", `Remove part ${i + 1}`);
+      x.addEventListener("click", async (e) => {
+        e.stopPropagation();
+        if (photos[i].thumbUrl) URL.revokeObjectURL(photos[i].thumbUrl);
+        photos.splice(i, 1); sel = Math.min(sel, photos.length - 1);
+        await refreshPreview(); renderPhotos();
+      });
+      b.appendChild(x); box.appendChild(b);
+    });
+    $("addPart").disabled = photos.length >= maxImages() || busy;
+    $("partHint").textContent = photos.length > 1
+      ? "Parts are read as one list, in this order. Tap a part to view or rotate it."
+      : "Only if one photo can't capture the whole list sharply. Add closer shots top to bottom.";
+    $("rotate").disabled = !photos.length || busy;
+    $("go").disabled = !photos.length || !sample || busy;
+  }
+  async function refreshPreview() {
+    const img = $("preview");
+    if (img.src) URL.revokeObjectURL(img.src);
+    if (!photos.length) { img.hidden = true; img.removeAttribute("src"); $("dropText").hidden = false; return; }
+    const b = await toBlob(prep(photos[sel], 900), 0.8);
+    img.src = URL.createObjectURL(b); img.hidden = false; $("dropText").hidden = true;
+  }
+
   const fileInput = $("file"), drop = $("drop");
-  fileInput.addEventListener("change", () => takeFile(fileInput.files[0]));
+  fileInput.addEventListener("change", () => { startFresh(fileInput.files[0]); fileInput.value = ""; });
+  $("fileAdd").addEventListener("change", () => { addPart($("fileAdd").files[0]); $("fileAdd").value = ""; });
+  $("addPart").addEventListener("click", () => $("fileAdd").click());
   drop.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileInput.click(); } });
   ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
   ["dragleave", "drop"].forEach((ev) => drop.addEventListener(ev, () => drop.classList.remove("over")));
-  drop.addEventListener("drop", (e) => { e.preventDefault(); takeFile(e.dataTransfer.files[0]); });
+  drop.addEventListener("drop", (e) => { e.preventDefault(); startFresh(e.dataTransfer.files[0]); });
   document.addEventListener("paste", (e) => {
     const item = [...(e.clipboardData?.items || [])].find((i) => i.type.startsWith("image/"));
-    if (item) takeFile(item.getAsFile());
+    if (item) startFresh(item.getAsFile());
   });
-  $("rotate").addEventListener("click", async () => { rotation = (rotation + 90) % 360; await refreshPreview(); });
+  $("rotate").addEventListener("click", async () => {
+    const p = photos[sel]; if (!p) return;
+    p.rotation = (p.rotation + 90) % 360;
+    await makeThumb(p); await refreshPreview(); renderPhotos();
+  });
+  $("enhance").addEventListener("change", refreshPreview);
 
-  // ---------- reading ----------
-  const PROMPT = (n) => `You are reading a photo of a hospital ward doctors' worklist: a printed table, sometimes with handwritten additions.
-${n > 1 ? `Image 1 is the whole page. Images 2 to ${n} are horizontal strips of the same page, top to bottom, overlapping slightly, so small text is legible. Use image 1 for the table structure and the strips for the text. A row that appears in two strips is ONE row.` : "There is one image: the whole page."}
+  // ---------- building what gets sent ----------
+  // One photo: whole page plus overlapping strips. Several photos: each gets its whole image, plus strips if the image budget allows.
+  async function buildImages(list) {
+    const budget = maxImages(), N = list.length;
+    if (N > budget) throw { code: "too_many_photos" };
+    const per = Math.floor(budget / N);
+    const blobs = [], groups = [];
+    for (let i = 0; i < N; i++) {
+      const p = list[i];
+      blobs.push(await toBlob(prep(p, 1600), 0.88));
+      const g = { photo: i + 1, whole: blobs.length, strips: [] };
+      const nStrips = $("strips").checked ? Math.min(3, per - 1) : 0;
+      if (nStrips >= 2) {
+        const full = drawRotated(p, 3200), enh = $("enhance").checked;
+        const H = full.height, overlap = Math.round(H * 0.08), band = Math.ceil(H / nStrips);
+        for (let s = 0; s < nStrips; s++) {
+          const strip = crop(full, Math.max(0, s * band - overlap), Math.min(H, (s + 1) * band + overlap));
+          blobs.push(await toBlob(enh ? enhanceCanvas(strip) : strip, 0.9));
+          g.strips.push(blobs.length);
+        }
+      }
+      groups.push(g);
+    }
+    return { blobs, groups };
+  }
+
+  function describeImages(groups) {
+    const lines = groups.map((g) => {
+      const who = groups.length > 1 ? `Photo ${g.photo}` : "The photo";
+      if (!g.strips.length) return `${who}: image ${g.whole} (whole photo).`;
+      return `${who}: image ${g.whole} is the whole photo; images ${g.strips[0]} to ${g.strips[g.strips.length - 1]} are horizontal strips of it, top to bottom, overlapping slightly, so small text is legible. Use the whole image for table structure and the strips for the text. A row that appears in two strips is ONE row.`;
+    });
+    if (groups.length > 1) lines.unshift(`There are ${groups.length} photos. They are separate shots of different parts of the SAME list, in order (usually top to bottom, possibly left part then right part). They overlap: merge them into ONE table, with each patient row and each column appearing once. Where a row is visible in two photos, use the clearer one.`);
+    return lines.join("\n");
+  }
+
+  const PROMPT = (groups) => `You are reading a photo of a hospital ward doctors' worklist: a printed table, sometimes with handwritten additions.
+${describeImages(groups)}
 
 Transcribe the table. Rules:
 - Copy text exactly as written, including abbreviations, spelling mistakes and odd dates. Do not correct, expand or interpret anything.
@@ -416,9 +550,10 @@ Transcribe the table. Rules:
 - Handwritten text: put it in the cell it sits in and flag that cell with reason "handwritten".
 - Flag every cell you are not fully sure of: hard to read, cut off, faint, might belong to a neighbouring row or column, or characters that could be read two ways. Give the reason in a few words.
 - Text you cannot read at all: write [illegible].
+- For each row give "pos": which photo it is clearest in, and the top and bottom of the row as fractions (0 to 1) of that photo's height, measured on its whole-photo image.
 
 Reply with only this JSON, no other text:
-{"date": "date printed on the list, or null", "columns": ["header", ...], "rows": [{"cells": ["one string per column, same order"], "flags": [{"col": 0, "reason": "short reason"}]}], "notes": "anything about the page as a whole, or empty string"}`;
+{"date": "date printed on the list, or null", "columns": ["header", ...], "rows": [{"cells": ["one string per column, same order"], "flags": [{"col": 0, "reason": "short reason"}], "pos": {"photo": 1, "top": 0.12, "bottom": 0.19}}], "notes": "anything about the page as a whole, or empty string"}`;
 
   function parseJson(text) {
     const tryP = (s) => { try { return JSON.parse(s); } catch { return undefined; } };
@@ -427,16 +562,23 @@ Reply with only this JSON, no other text:
     if (v === undefined) { const a = text.indexOf("{"), b = text.lastIndexOf("}"); if (a >= 0 && b > a) v = tryP(text.slice(a, b + 1)); }
     return v;
   }
-  function normalise(v) {
+  function cleanFlags(arr, ncol) {
+    return (Array.isArray(arr) ? arr : [])
+      .map((f) => ({ col: Number(f?.col), reason: String(f?.reason ?? "unsure") }))
+      .filter((f) => Number.isInteger(f.col) && f.col >= 0 && f.col < ncol);
+  }
+  function cleanPos(p, nPhotos) {
+    const photo = Math.round(Number(p?.photo)), top = Number(p?.top), bottom = Number(p?.bottom);
+    if (!(photo >= 1 && photo <= nPhotos) || !(top >= 0 && bottom <= 1.0001 && bottom > top)) return null;
+    return { photo, top, bottom: Math.min(1, bottom) };
+  }
+  function normalise(v, nPhotos) {
     if (!v || !Array.isArray(v.columns) || !Array.isArray(v.rows)) return null;
     const columns = v.columns.map((c) => String(c ?? ""));
     const rows = v.rows.map((r) => {
       const cells = Array.isArray(r?.cells) ? r.cells.map((x) => String(x ?? "")) : [];
       while (cells.length < columns.length) cells.push("");
-      const flags = (Array.isArray(r?.flags) ? r.flags : [])
-        .map((f) => ({ col: Number(f?.col), reason: String(f?.reason ?? "unsure") }))
-        .filter((f) => Number.isInteger(f.col) && f.col >= 0 && f.col < columns.length);
-      return { cells: cells.slice(0, columns.length), flags };
+      return { cells: cells.slice(0, columns.length), flags: cleanFlags(r?.flags, columns.length), pos: cleanPos(r?.pos, nPhotos), changed: [] };
     });
     return { example: false, date: v.date ? String(v.date) : "", columns, rows, notes: String(v.notes ?? "") };
   }
@@ -446,51 +588,148 @@ Reply with only this JSON, no other text:
     sampling_disabled: "Claude isn't available on this account.",
     rate_limited: "Usage limit or too many reads at once. Wait a bit and try again.",
     session_expired: "You've been signed out. Sign in again, then retry.",
-    image_rejected: "The photo was refused (wrong type or too large). Try a different photo.",
+    image_rejected: "A photo was refused (wrong type or too large). Try a different photo.",
     images_unavailable: "This view can't send photos to Claude.",
     refused: "Claude declined to read this image.",
     empty_completion: "Claude returned nothing. Try again, or switch off strips.",
     prompt_too_large: "Too much to send at once. Switch off strips and retry.",
+    too_many_photos: "Too many photos for one read here. Remove one and retry.",
     upstream_error: "Connection or service hiccup. Try again."
   };
 
-  $("go").addEventListener("click", async () => {
-    if (!sample || !bitmap) return;
-    $("go").disabled = true; $("stop").hidden = false; $("rotate").disabled = true;
-    ctl = new AbortController();
-    let images;
-    try { images = await buildImages(); } catch { setStatus("Couldn't prepare the photo.", "err"); return finish(); }
-    startedAt = performance.now();
-    let rowsSeen = 0;
-    const tick = () => {
-      const s = ((performance.now() - startedAt) / 1000).toFixed(0);
-      setStatus(rowsSeen ? `Reading… ${rowsSeen} rows so far · ${s} s` : `Thinking… ${s} s (sent ${images.length} image${images.length > 1 ? "s" : ""})`);
-      $("status").classList.add("spin");
-    };
+  function begin() {
+    busy = true; ctl = new AbortController();
+    $("stop").hidden = false; renderPhotos(); renderMetrics();
+  }
+  function finish() {
+    busy = false; clearInterval(timer); $("status").classList.remove("spin");
+    $("stop").hidden = true; renderPhotos(); renderMetrics();
+  }
+  function startTicker(fn) {
+    const t0 = performance.now();
+    const tick = () => { setStatus(fn(((performance.now() - t0) / 1000).toFixed(0))); $("status").classList.add("spin"); };
     tick(); timer = setInterval(tick, 500);
+    return t0;
+  }
+  const tierName = (t) => t === "complex" ? "most capable" : t === "quick" ? "quick" : "standard";
+
+  // ---------- full read ----------
+  $("go").addEventListener("click", async () => {
+    if (!sample || !photos.length || busy) return;
+    begin();
+    let built;
+    try { setStatus("Preparing photo…"); built = await buildImages(photos); }
+    catch (e) { setStatus(ERR[e?.code] || "Couldn't prepare the photo.", "err"); return finish(); }
+    let rowsSeen = 0;
+    const n = built.blobs.length;
+    const t0 = startTicker((s) => rowsSeen ? `Reading… ${rowsSeen} rows so far · ${s} s` : `Thinking… ${s} s (sent ${n} image${n > 1 ? "s" : ""})`);
     try {
-      const res = await sample(PROMPT(images.length), {
-        images, modelTier: $("tier").value, signal: ctl.signal, cache: false,
+      const res = await sample(PROMPT(built.groups), {
+        images: built.blobs, modelTier: $("tier").value, signal: ctl.signal, cache: false,
         onText: ({ text }) => { rowsSeen = (text.match(/"cells"\s*:/g) || []).length; }
       });
-      const secs = (performance.now() - startedAt) / 1000;
-      const nb = normalise(parseJson(res.text));
+      const secs = (performance.now() - t0) / 1000;
+      const nb = normalise(parseJson(res.text), photos.length);
       if (!nb) { setStatus("Claude's reply didn't come back as a table. Try again, or try the other reader.", "err"); return; }
       board = nb; flagCursor = -1;
-      lastRun = { secs, tier: res.modelTierApplied === "complex" ? "most capable" : res.modelTierApplied === "quick" ? "quick" : "standard", images: images.length };
+      readPhotos = photos.map((p) => ({ bitmap: p.bitmap, rotation: p.rotation }));
+      lastRun = { label: "read in", secs, tier: tierName(res.modelTierApplied), images: n };
       save(); render();
-      const f = board.rows.reduce((n, r) => n + r.flags.length, 0);
-      setStatus(`Done. ${board.rows.length} rows in ${secs.toFixed(1)} s, ${f} cell${f === 1 ? "" : "s"} to check.` + (res.truncated ? " The reply was cut short, so the last rows may be missing." : ""), res.truncated ? "err" : "good");
+      const f = flagCount();
+      let msg = `Done. ${board.rows.length} rows in ${secs.toFixed(1)} s, ${f} cell${f === 1 ? "" : "s"} to check.`;
+      if (f >= 5) msg += " Try Re-read unsure rows next.";
+      if (res.truncated) msg += " The reply was cut short, so the last rows may be missing.";
+      setStatus(msg, res.truncated ? "err" : "good");
     } catch (e) {
       if (e?.code === "cancelled") setStatus("Stopped.");
       else setStatus(ERR[e?.code] || ERR.upstream_error, "err");
     } finally { finish(); }
   });
   $("stop").addEventListener("click", () => ctl?.abort());
-  function finish() {
-    clearInterval(timer); $("status").classList.remove("spin");
-    $("stop").hidden = true; $("go").disabled = !bitmap || !sample; $("rotate").disabled = !bitmap;
+
+  // ---------- re-read unsure rows ----------
+  // Each flagged row is cropped from the original photo at full resolution (a wide, short band stays under the downsizing limit) and re-read with its current transcription as context.
+  const clip = (s, n = 160) => (s.length > n ? s.slice(0, n) + "…" : s);
+  function rowCrop(full, pos) {
+    const H = full.height;
+    if (!pos) return crop(full, 0, H);
+    const h = pos.bottom - pos.top, pad = Math.max(0.035, h * 0.6);
+    return crop(full, Math.floor(Math.max(0, pos.top - pad) * H), Math.ceil(Math.min(1, pos.bottom + pad) * H));
   }
+  function rereadPrompt(items) {
+    const cols = board.columns.map((c, i) => `${i}: ${c || "(no header)"}`).join(" | ");
+    const blocks = items.map((it, k) => {
+      const r = board.rows[it.index];
+      const current = r.cells.map((t, c) => `  [${c}] ${JSON.stringify(clip(t))}`).join("\n");
+      const unsure = r.flags.map((f) => `col ${f.col} (${f.reason})`).join(", ");
+      return `Image ${k + 1}: a close crop of part of the list around row ${it.index + 1}.${it.pos ? "" : " (Its exact position wasn't known, so this is the whole photo; find the row by its other cells.)"}\nCurrent reading of that row:\n${current}\nUnsure cells: ${unsure}`;
+    }).join("\n\n");
+    return `You are re-checking cells of a hospital ward worklist table that an earlier reading was unsure about. Each image is a close, full-resolution crop of the page. A crop may also show neighbouring rows: identify the right row by its other cells (name, ID number, bed).
+Columns: ${cols}
+
+${blocks}
+
+For each image, re-read ONLY the unsure cells of that row. Copy text exactly as written; do not correct, expand or interpret. Write [illegible] for text you cannot read. Flag a cell again only if you are still not sure, with a short reason.
+
+Reply with only this JSON, no other text:
+{"rows": [{"image": 1, "cells": {"3": "exact text"}, "flags": [{"col": 3, "reason": "short reason"}]}]}`;
+  }
+
+  $("reread").addEventListener("click", async () => {
+    if (!sample || busy || !readPhotos) return;
+    const targets = board.rows.map((r, index) => ({ index, pos: r.pos })).filter((t) => (board.rows[t.index].flags || []).length);
+    if (!targets.length) { setStatus("No unsure cells left.", "good"); return; }
+    begin();
+    const per = Math.max(1, maxImages()), batches = [];
+    for (let i = 0; i < targets.length; i += per) batches.push(targets.slice(i, i + per));
+    const fullCache = new Map();
+    const fullFor = (ph) => { if (!fullCache.has(ph)) fullCache.set(ph, drawRotated(readPhotos[ph - 1] || readPhotos[0], 4000)); return fullCache.get(ph); };
+    let done = 0, fixed = 0, still = 0, sent = 0, batchNo = 0;
+    const t0 = startTicker((s) => `Re-reading ${targets.length} row${targets.length > 1 ? "s" : ""}… batch ${batchNo} of ${batches.length} · ${s} s`);
+    try {
+      for (const batch of batches) {
+        batchNo++;
+        const imgs = [];
+        for (const it of batch) {
+          const c = rowCrop(fullFor(it.pos?.photo || 1), it.pos);
+          imgs.push(await toBlob(it.pos && $("enhance").checked ? enhanceCanvas(c) : c, 0.92));
+        }
+        sent += imgs.length;
+        const res = await sample(rereadPrompt(batch), { images: imgs, modelTier: $("tier").value, signal: ctl.signal, cache: false });
+        const v = parseJson(res.text);
+        const rows = Array.isArray(v?.rows) ? v.rows : [];
+        for (const out of rows) {
+          const it = batch[Math.round(Number(out?.image)) - 1];
+          if (!it) continue;
+          const row = board.rows[it.index];
+          const asked = new Set(row.flags.map((f) => f.col));
+          const newFlags = cleanFlags(out.flags, board.columns.length).filter((f) => asked.has(f.col));
+          const cells = out?.cells && typeof out.cells === "object" ? out.cells : {};
+          row.changed = row.changed || [];
+          for (const c of asked) {
+            const key = String(c);
+            if (key in cells) {
+              const t = String(cells[key] ?? "");
+              if (t !== row.cells[c] && !row.changed.includes(c)) row.changed.push(c);
+              row.cells[c] = t;
+            }
+          }
+          const before = row.flags.length;
+          row.flags = newFlags;
+          fixed += before - newFlags.length; still += newFlags.length;
+          done++;
+        }
+        save(); render();
+      }
+      const secs = (performance.now() - t0) / 1000;
+      lastRun = { label: "re-read in", secs, tier: tierName($("tier").value), images: sent };
+      render();
+      setStatus(`Re-read ${done} row${done === 1 ? "" : "s"} in ${secs.toFixed(1)} s: ${fixed} cell${fixed === 1 ? "" : "s"} settled, ${flagCount()} still unsure. Changed text is underlined.`, "good");
+    } catch (e) {
+      if (e?.code === "cancelled") setStatus("Stopped. Rows already re-read are kept.");
+      else setStatus((ERR[e?.code] || ERR.upstream_error) + " Rows already re-read are kept.", "err");
+    } finally { finish(); }
+  });
 
   // ---------- boot ----------
   render();
@@ -500,8 +739,8 @@ Reply with only this JSON, no other text:
       if (!sample) { $("outsideNote").hidden = false; setStatus("Photo reading unavailable here.", "err"); return; }
       imgLimits = (await sample.limits().catch(() => null))?.images || null;
       if (!imgLimits) { sample = null; setStatus("This view can't send photos to Claude.", "err"); return; }
-      fileInput.accept = imgLimits.mediaTypes.join(",");
-      $("go").disabled = !bitmap;
+      fileInput.accept = $("fileAdd").accept = imgLimits.mediaTypes.join(",");
+      renderPhotos(); renderMetrics();
     } catch {
       $("outsideNote").hidden = false; setStatus("Photo reading unavailable here.", "err");
     }
