@@ -158,6 +158,12 @@ button.armed { background: var(--danger); color: var(--sheet); border-color: var
 .tlabel { font-family: var(--font-mono); font-size: 10px; letter-spacing: 0.07em; text-transform: uppercase; color: var(--ink-soft); }
 .tip { font-family: var(--font-mono); font-size: 11px; color: var(--ink-soft); user-select: none; overflow-wrap: anywhere; }
 .flagtip { color: var(--flag-ink); }
+.flagrow { display: flex; align-items: flex-end; justify-content: space-between; gap: 6px; }
+.keep { flex: none; border: 1px solid var(--highlight-edge); background: var(--sheet); color: var(--ink); font-size: 11.5px; font-weight: 600; padding: 3px 9px; border-radius: 999px; min-height: 26px; }
+.keep:hover:not(:disabled) { border-color: var(--ink); }
+.saved { font-family: var(--font-mono); font-size: 0.75rem; color: var(--ink-soft); }
+.datewrap { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+#toast a { color: inherit; font-weight: 600; text-decoration: underline; }
 .was { color: var(--accent); }
 .tag { align-self: flex-start; font-family: var(--font-mono); font-size: 10px; font-weight: 500; letter-spacing: 0.06em; text-transform: uppercase; background: var(--ok); color: var(--sheet); padding: 0 5px; border-radius: 3px; }
 .jobhead { display: flex; justify-content: space-between; align-items: center; gap: 6px; min-height: 18px; }
@@ -304,7 +310,10 @@ details.discharged summary { cursor: pointer; font-weight: 600; font-size: 0.92r
   <section aria-label="Worklist" style="display:grid;gap:10px;min-width:0">
     <div class="example-note" id="exampleNote">Example rows, typed in by hand from a fictional list so you can see the layout. Read a photo to replace them.</div>
     <div class="boardbar">
-      <div class="listdate" id="listDate" contenteditable="true" spellcheck="false" aria-label="List date"></div>
+      <div class="datewrap">
+        <div class="listdate" id="listDate" contenteditable="true" spellcheck="false" aria-label="List date"></div>
+        <span class="saved" id="savedNote" aria-live="polite"></span>
+      </div>
       <div class="toolbar">
         <div class="seg" role="group" aria-label="View">
           <button type="button" id="viewGrid" aria-pressed="true">Tiles</button>
@@ -320,9 +329,10 @@ details.discharged summary { cursor: pointer; font-weight: 600; font-size: 0.92r
       <button class="chip" id="fUnsure" type="button" aria-pressed="false">Unsure only</button>
       <button class="chip" id="fJobs" type="button" aria-pressed="false">Open jobs</button>
       <button class="small" id="nextFlag" type="button">Next unsure</button>
+      <button class="small" id="keepAll" type="button" hidden>Keep all guesses</button>
       <button class="small" id="reread" type="button" disabled>Re-read unsure rows</button>
-      <button class="small" id="copyTsv" type="button">Copy for Excel</button>
-      <button class="small" id="csv" type="button" hidden>Save CSV</button>
+      <button class="small" id="exportBtn" type="button" aria-haspopup="true">Export</button>
+      <input type="file" id="backupIn" accept=".json,application/json" hidden aria-label="Open a board backup">
       <button class="small" id="more" type="button" aria-haspopup="true">More</button>
     </div>
     <div class="hiddenbar" id="hiddenBar" hidden></div>
@@ -337,7 +347,7 @@ details.discharged summary { cursor: pointer; font-weight: 600; font-size: 0.92r
 </div>
 
 <div id="pop" hidden tabindex="-1" role="dialog" aria-label="Options"></div>
-<div id="toast" hidden role="status"><span id="toastMsg"></span><button type="button" id="toastUndo">Undo</button></div>
+<div id="toast" hidden role="status"><span id="toastMsg"></span><a id="toastLink" target="_blank" rel="noopener" hidden>Open</a><button type="button" id="toastUndo">Undo</button></div>
 
 <script>
 (() => {
@@ -350,7 +360,7 @@ details.discharged summary { cursor: pointer; font-weight: 600; font-size: 0.92r
   const reduceMotion = () => matchMedia("(prefers-reduced-motion: reduce)").matches;
   const uid = (p) => p + Math.random().toString(36).slice(2, 10);
   const lsGet = (k) => { try { return localStorage.getItem(k); } catch { return null; } };
-  const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch {} };
+  const lsSet = (k, v) => { try { localStorage.setItem(k, v); return true; } catch { return false; } };
   const safeParse = (s) => { try { return s ? JSON.parse(s) : null; } catch { return null; } };
   const norm = (s) => String(s ?? "").replace(/\s+/g, " ").trim().toLowerCase();
   const lines = (s) => String(s ?? "").split("\n").map((x) => x.trim()).filter(Boolean);
@@ -439,7 +449,13 @@ details.discharged summary { cursor: pointer; font-weight: 600; font-size: 0.92r
   const rowPhotos = new Map();   // row id -> { photo, pos } for re-reading; photos stay in memory only
 
   let saveT = null;
-  function save() { clearTimeout(saveT); saveT = setTimeout(() => lsSet(STORE_KEY, JSON.stringify(board)), 250); }
+  function save() {
+    clearTimeout(saveT);
+    saveT = setTimeout(() => {
+      const ok = lsSet(STORE_KEY, JSON.stringify(board));
+      $("savedNote").textContent = ok ? "Saved on this device " + new Date().toLocaleTimeString("en-AU", { hour: "2-digit", minute: "2-digit" }) : "Not saving: this browser blocks storage";
+    }, 250);
+  }
   function saveUi() { lsSet(UI_KEY, JSON.stringify({ view: ui.view, cardOpen: ui.cardOpen })); }
 
   const findRow = (id) => board.rows.find((r) => r.id === id);
@@ -482,9 +498,10 @@ details.discharged summary { cursor: pointer; font-weight: 600; font-size: 0.92r
   $("redo").addEventListener("click", redo);
 
   let toastT = null;
-  function toast(msg, withUndo = false) {
+  function toast(msg, withUndo = false, link = null, ms = 0) {
     $("toastMsg").textContent = msg; $("toastUndo").hidden = !withUndo; $("toast").hidden = false;
-    clearTimeout(toastT); toastT = setTimeout(() => { $("toast").hidden = true; }, withUndo ? 6000 : 2600);
+    const a = $("toastLink"); a.hidden = !link; if (link) { a.href = link.href; a.textContent = link.label || "Open"; }
+    clearTimeout(toastT); toastT = setTimeout(() => { $("toast").hidden = true; }, ms || (link ? 12000 : withUndo ? 6000 : 2600));
   }
   $("toastUndo").addEventListener("click", () => { $("toast").hidden = true; undo(); });
 
@@ -594,7 +611,15 @@ details.discharged summary { cursor: pointer; font-weight: 600; font-size: 0.92r
       }
       t.append(tx);
     }
-    if (flag !== undefined) t.append(el("span", "tip flagtip", "? " + flag));
+    if (flag !== undefined) {
+      const fr = el("div", "flagrow");
+      fr.append(el("span", "tip flagtip", "? " + flag));
+      const kb = el("button", "keep", "Keep"); kb.type = "button"; kb.dataset.focuskey = "k:" + key;
+      kb.title = "Keep this reading and clear the yellow";
+      kb.setAttribute("aria-label", `Keep the reading of ${c.name || "this cell"} for ${rowLabel(r)}`);
+      kb.addEventListener("click", (e) => { e.stopPropagation(); keepGuess(r.id, c.id); });
+      fr.append(kb); t.append(fr);
+    }
     if (was !== undefined) t.append(el("span", "tip was", open ? (was ? "was: " + clip(was, 220) : "was empty") : "updated"));
     t.addEventListener("click", (e) => { if (ui.open !== key && !e.target.closest("input,label,button,textarea,a")) openTile(key); });
     t.addEventListener("keydown", (e) => {
@@ -612,7 +637,7 @@ details.discharged summary { cursor: pointer; font-weight: 600; font-size: 0.92r
       if (r.flags[colId] !== undefined || r.changed[colId] !== undefined) {
         delete r.flags[colId]; delete r.changed[colId];
         tile.classList.remove("flag", "changed", "current");
-        tile.querySelectorAll(".flagtip,.was").forEach((n) => n.remove());
+        tile.querySelectorAll(".flagrow,.flagtip,.was").forEach((n) => n.remove());
       }
       save(); renderMetrics();
     });
@@ -665,6 +690,12 @@ details.discharged summary { cursor: pointer; font-weight: 600; font-size: 0.92r
       edit.addEventListener("click", () => { ui.jobsText = key; render({ noFocus: true }); focusByKey("e:" + key); });
       row.append(add, edit); t.append(row);
     }
+  }
+  function keepGuess(rowId, colId) {
+    const r = findRow(rowId); if (!r || r.flags[colId] === undefined) return;
+    mutate(() => { delete findRow(rowId).flags[colId]; });
+    if (ui.current === rowId + ":" + colId) ui.current = null;
+    const next = host.querySelector(".keep"); if (next && document.activeElement === document.body) next.focus({ preventScroll: true });
   }
   function toggleDone(rowId, line, on) {
     const r = findRow(rowId); if (!r) return;
@@ -744,6 +775,7 @@ details.discharged summary { cursor: pointer; font-weight: 600; font-size: 0.92r
     if (board.jobsCol) parts.push(`<span>jobs open <b>${jobsOpen}/${jobsAll}</b></span>`);
     if (lastRun) parts.push(`<span>${lastRun.label} <b>${lastRun.secs.toFixed(1)} s</b></span>`, `<span>reader <b>${lastRun.tier}</b></span>`, `<span>images <b>${lastRun.images}</b></span>`);
     $("metrics").innerHTML = parts.join("");
+    $("keepAll").hidden = !flags; $("keepAll").textContent = `Keep all guesses (${flags})`;
     const rr = $("reread"), targets = rereadTargets();
     rr.disabled = busy || !sample || !targets.length;
     rr.title = !sample ? "Reading isn't available here" : !targets.length ? "No unsure rows with a photo in memory (photos aren't kept after a reload)" : "";
@@ -1006,6 +1038,12 @@ details.discharged summary { cursor: pointer; font-weight: 600; font-size: 0.92r
   $("fUnsure").addEventListener("click", () => { ui.unsureOnly = !ui.unsureOnly; ui.open = null; render(); });
   $("fJobs").addEventListener("click", () => { ui.openJobsOnly = !ui.openJobsOnly; ui.open = null; render(); });
   $("listDate").addEventListener("input", () => { board.date = $("listDate").textContent.trim(); save(); });
+  $("keepAll").addEventListener("click", () => {
+    const n = board.rows.reduce((k, r) => k + Object.keys(r.flags).length, 0); if (!n) return;
+    mutate(() => board.rows.forEach((r) => { r.flags = {}; }));
+    ui.current = null;
+    toast(`Kept ${n} best guess${n === 1 ? "" : "es"}.`, true);
+  });
   $("nextFlag").addEventListener("click", () => {
     const cols = ui.view === "grid" ? visibleCols() : board.columns.filter((c) => !board.cardHidden.includes(c.id));
     const keys = [];
@@ -1049,9 +1087,92 @@ details.discharged summary { cursor: pointer; font-weight: 600; font-size: 0.92r
     };
     return [board.columns.map((c) => c.name), ...exportRows()].map((line) => line.map(esc).join(sep)).join("\r\n");
   }
-  $("copyTsv").addEventListener("click", async () => {
+  async function copyTsv() {
     try { await navigator.clipboard.writeText(toDelimited("\t")); toast("Copied. Paste into Excel or Sheets."); }
-    catch { toast("Couldn't reach the clipboard here. Use Save CSV instead."); }
+    catch { toast("Couldn't reach the clipboard here. Use a CSV file or Google Sheets instead."); }
+  }
+  let downloads = null, mcp = null, exporting = false;
+  const exportTitle = () => "Ward list " + (board.date || new Date().toLocaleDateString("en-AU"));
+  const fileSlug = () => (board.date || "undated").replace(/[^\w-]+/g, "-");
+  function docHtml() {
+    const esc = (x) => String(x ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    const cols = visibleCols();
+    const cell = (r, c) => {
+      if (c.id === board.jobsCol) { const done = new Set(r.done); return jobLines(r).map((l) => (done.has(norm(l)) ? "☑ " : "☐ ") + esc(l)).join("<br>"); }
+      return esc(r.cells[c.id]).replace(/\n/g, "<br>");
+    };
+    return `<html><head><meta charset="utf-8"><title>${esc(exportTitle())}</title></head><body>`
+      + `<h1>${esc(exportTitle())}</h1>`
+      + `<table border="1" cellpadding="4" cellspacing="0" style="border-collapse:collapse;font-size:9pt;font-family:Arial,sans-serif">`
+      + `<thead><tr>${cols.map((c) => `<th style="background:#e3e7ee;text-align:left;vertical-align:bottom">${esc(c.name)}</th>`).join("")}</tr></thead>`
+      + `<tbody>${board.rows.map((r) => `<tr>${cols.map((c) => `<td style="vertical-align:top">${cell(r, c)}</td>`).join("")}</tr>`).join("")}</tbody></table>`
+      + `</body></html>`;
+  }
+  const DRIVE_COPY = {
+    server_not_connected: "Google Drive isn't connected. Add it in claude.ai Settings, Connectors, then try again.",
+    needs_reauth: "Google Drive needs reconnecting in claude.ai Settings, Connectors.",
+    selection_required: "Pick which Google Drive connection to use when Claude asks, then try again.",
+    not_in_manifest: "Google Drive isn't allowed for this page. Allow it in the page's permissions, then try again.",
+    blocked_by_policy: "Your organisation blocks this Google Drive action.",
+    approval_required: "Saving to Drive needs your approval. Try again and allow it.",
+    server_unavailable: "Google Drive didn't answer. Check your Drive before trying again, in case it saved.",
+    upstream_error: "Something went wrong reaching Google Drive. Check your Drive before trying again.",
+    cancelled: "Cancelled."
+  };
+  function driveLink(payload, kind) {
+    let f = payload;
+    if (typeof f === "string") {
+      const url = f.match(/https:\/\/docs\.google\.com\/[^\s"')]+/); if (url) return url[0];
+      const id = f.match(/"id"\s*:\s*"([\w-]{10,})"/); f = id ? { id: id[1] } : {};
+    }
+    if (!f || typeof f !== "object") return null;
+    if (f.file && typeof f.file === "object") f = f.file;
+    const direct = f.webViewLink || f.alternateLink || f.url || f.link;
+    if (typeof direct === "string" && /^https:\/\//.test(direct)) return direct;
+    const id = f.id || f.fileId;
+    return id ? (kind === "sheet" ? `https://docs.google.com/spreadsheets/d/${id}/edit` : `https://docs.google.com/document/d/${id}/edit`) : null;
+  }
+  async function saveToDrive(kind) {
+    if (exporting) return;
+    if (!mcp) { toast("Saving to Google Drive only works when this page is opened inside Claude. Use a CSV file instead.", false, null, 6000); return; }
+    exporting = true;
+    toast(kind === "sheet" ? "Saving to Google Sheets…" : "Saving as a Google Doc…", false, null, 60000);
+    const input = kind === "sheet"
+      ? { title: exportTitle(), textContent: toDelimited(","), contentMimeType: "text/csv" }
+      : { title: exportTitle(), textContent: docHtml(), contentMimeType: "text/html" };
+    try {
+      const res = await mcp.callTool("Google Drive", "create_file", input, { cache: false });
+      const href = driveLink(res.payload, kind);
+      toast(`Saved to your Google Drive as "${exportTitle()}"${kind === "sheet" ? " (Sheets)" : " (Docs)"}.`, false, href ? { href, label: "Open" } : null, href ? 15000 : 6000);
+    } catch (e) {
+      const code = e && e.code;
+      toast(code === "tool_error" ? "Google Drive refused the file: " + clip((e && e.message) || "no reason given", 140) : (DRIVE_COPY[code] || DRIVE_COPY.upstream_error), false, null, 9000);
+    } finally { exporting = false; }
+  }
+  async function saveFile(filename, data, what) {
+    if (!downloads) { toast("Saving files only works when this page is opened inside Claude."); return; }
+    try { await downloads.save({ filename, data }); toast(what + " saved."); }
+    catch (e) { if (e && e.code && !/cancel|declin/i.test(e.code)) toast("Couldn't save the file (" + e.code + ")."); }
+  }
+  $("exportBtn").dataset.focuskey = "export";
+  $("exportBtn").addEventListener("click", () => openPop("export", (p) => {
+    p.append(el("div", "poptitle", "Export this list"));
+    p.append(popItem("Google Sheets (editable, shareable)", () => saveToDrive("sheet")));
+    p.append(popItem("Google Doc (table to print or send)", () => saveToDrive("doc")));
+    p.append(popItem("CSV file", () => saveFile("worklist-" + fileSlug() + ".csv", toDelimited(","), "CSV")));
+    p.append(popItem("Copy for Excel or Sheets", copyTsv));
+    p.append(el("hr"));
+    p.append(popItem("Save a backup of this board", () => saveFile("worklist-board-" + fileSlug() + ".json", JSON.stringify(board), "Backup")));
+    p.append(popItem("Open a backup…", () => $("backupIn").click()));
+  }));
+  $("backupIn").addEventListener("change", async () => {
+    const file = $("backupIn").files[0]; $("backupIn").value = "";
+    if (!file) return;
+    const b = repair(safeParse(await file.text()));
+    if (!b) { toast("That file isn't a Worklist Scanner board."); return; }
+    mutate(() => { board = b; });
+    rowPhotos.clear(); ui.open = null; ui.current = null;
+    toast(`Opened a board with ${b.rows.length} patient${b.rows.length === 1 ? "" : "s"}.`, true);
   });
 
   // ---------- image processing ----------
@@ -1219,7 +1340,7 @@ Transcribe the table. Rules:
 - One object per patient row, top to bottom. Keep line breaks inside a cell as \\n. Empty cell = "".
 - Handwritten text: put it in the cell it sits in and flag that cell with reason "handwritten".
 - Flag every cell you are not fully sure of: hard to read, cut off, faint, might belong to a neighbouring row or column, or characters that could be read two ways. Give the reason in a few words.
-- Text you cannot read at all: write [illegible].
+- Never leave a cell blank or write [illegible] just because it is hard to read: always give your single best reading, flag it, and put any alternative reading in the reason (for example "could be 1943 or 2943"). Use [illegible] only when there is genuinely nothing to guess from.
 - For each row give "pos": which photo it is clearest in, and the top and bottom of the row as fractions (0 to 1) of that photo's height, measured on its whole-photo image.
 
 Reply with only this JSON, no other text:
@@ -1488,7 +1609,7 @@ Columns: ${cols}
 
 ${blocks}
 
-For each image, re-read ONLY the unsure cells of that row. Copy text exactly as written; do not correct, expand or interpret. Write [illegible] for text you cannot read. Flag a cell again only if you are still not sure, with a short reason.
+For each image, re-read ONLY the unsure cells of that row. Copy text exactly as written; do not correct, expand or interpret. Always give your single best reading rather than [illegible]. Flag a cell again only if you are still not sure, with the alternative reading in the reason.
 
 Reply with only this JSON, no other text:
 {"rows": [{"image": 1, "cells": {"3": "exact text"}, "flags": [{"col": 3, "reason": "short reason"}]}]}`;
@@ -1610,7 +1731,7 @@ Fill each column from the document:
 - Use only information visible in the document. Never invent or infer facts; leave a column "" if the document doesn't give it.
 - Copy names, ID numbers, dates, doses and results exactly. You may shorten long passages into the list's terse style, but every fact you include must be in the document.
 - Put pending tasks, plans or things to chase into the jobs column if there is one, one per line.
-- Flag cells that are hard to read, ambiguous, or that you shortened heavily, with a short reason.
+- Flag cells that are hard to read, ambiguous, or that you shortened heavily, with a short reason. For hard-to-read text still give your best reading, with any alternative in the reason.
 - If the document covers more than one patient, use the most prominent one and say so in notes.
 
 Reply with only this JSON, no other text:
@@ -1653,9 +1774,14 @@ Reply with only this JSON, no other text:
       const id = "add_" + c.id;
       const lab = el("label", null, c.name || "(untitled)"); lab.htmlFor = id;
       const ta = el("textarea"); ta.id = id; ta.value = res.cells[c.id]; ta.rows = Math.min(6, Math.max(1, lines(res.cells[c.id]).length));
-      ta.addEventListener("input", () => { res.cells[c.id] = ta.value; if (res.flags[c.id] !== undefined) { delete res.flags[c.id]; f.classList.remove("flag"); f.querySelector(".tip")?.remove(); } });
+      ta.addEventListener("input", () => { res.cells[c.id] = ta.value; if (res.flags[c.id] !== undefined) { delete res.flags[c.id]; f.classList.remove("flag"); f.querySelector(".flagrow")?.remove(); } });
       f.append(lab, ta);
-      if (res.flags[c.id] !== undefined) f.append(el("span", "tip", "? " + res.flags[c.id]));
+      if (res.flags[c.id] !== undefined) {
+        const fr = el("div", "flagrow"); fr.append(el("span", "tip", "? " + res.flags[c.id]));
+        const kb = el("button", "keep", "Keep"); kb.type = "button"; kb.setAttribute("aria-label", "Keep the reading of " + (c.name || "this field"));
+        kb.addEventListener("click", () => { delete res.flags[c.id]; f.classList.remove("flag"); fr.remove(); });
+        fr.append(kb); f.append(fr);
+      }
       box.append(f);
     });
     $("addNotes").hidden = !res.notes; $("addNotes").textContent = res.notes ? "Reader's note: " + res.notes : "";
@@ -1678,17 +1804,9 @@ Reply with only this JSON, no other text:
 
   // ---------- boot ----------
   render();
-  (async () => {
-    try {
-      const dl = await claude.use("downloads");
-      if (!dl) return;
-      $("csv").hidden = false;
-      $("csv").addEventListener("click", async () => {
-        try { await dl.save({ filename: "worklist-" + (board.date || "undated").replace(/[^\w-]+/g, "-") + ".csv", data: toDelimited(",") }); }
-        catch (e) { if (e && e.code && !/cancel|declin/i.test(e.code)) toast("Couldn't save the file (" + e.code + ")."); }
-      });
-    } catch {}
-  })();
+  $("savedNote").textContent = lsGet(STORE_KEY) ? "Saved on this device" : "";
+  (async () => { try { downloads = await claude.use("downloads"); } catch {} })();
+  (async () => { try { mcp = await claude.use("mcp"); } catch {} })();
   (async () => {
     try {
       sample = await claude.use("sample");
